@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.models import wide_resnet50_2
+import torchvision.models as models
 
 import datasets.mvtec as mvtec
 
@@ -29,17 +30,19 @@ def parse_args():
 def main():
 
     args = parse_args()
-
+    path_of_dataset = r'/media/mostafahaggag/Shared_Drive/selfdevelopment/datasets'
     # device setup
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # load model
     # he just loaded a pretrained network from torch visions
-    model = wide_resnet50_2(pretrained=True, progress=True)
+    # download the weights
+    model = wide_resnet50_2(weights=models.Wide_ResNet50_2_Weights.IMAGENET1K_V1, progress=True)
     model.to(device)
     model.eval()
 
     # set model's intermediate outputs
+    # you are putting everything in a list called outputs
     outputs = []
     def hook(module, input, output):
         # The user defined hook to be registered.
@@ -87,9 +90,9 @@ def main():
     # he is looping over all the class names which is a list
     for class_name in mvtec.CLASS_NAMES:
         # for each class name he creates the dataset and dataloader
-        train_dataset = mvtec.MVTecDataset(class_name=class_name, is_train=True)
+        train_dataset = mvtec.MVTecDataset(root_path=path_of_dataset,class_name=class_name, is_train=True)
         train_dataloader = DataLoader(train_dataset, batch_size=32, pin_memory=True)
-        test_dataset = mvtec.MVTecDataset(class_name=class_name, is_train=False)
+        test_dataset = mvtec.MVTecDataset(root_path=path_of_dataset,class_name=class_name, is_train=False)
         test_dataloader = DataLoader(test_dataset, batch_size=32, pin_memory=True)
         # he creates the ordered directory
         # this is how you define ordered dict
@@ -101,17 +104,27 @@ def main():
         # it is very interesting to know what is he saving insdie of here
         train_feature_filepath = os.path.join(args.save_path, 'temp', 'train_%s.pkl' % class_name)
         if not os.path.exists(train_feature_filepath):
+            # there should be no mask in here
             for (x, y, mask) in tqdm(train_dataloader, '| feature extraction | train | %s |' % class_name):
                 # model prediction
                 with torch.no_grad():
+                    # you get the predict mask
+                    # there is something wrong in here
+                    # why he is doign nothing with perd
+                    # because you are are noting caring about it
                     pred = model(x.to(device))
+                    # the idea in here outputs is the place where the hooks put its things
+                    # check function name bellow
+                    #     def hook(module, input, output):
                 # get intermediate layer outputs
                 for k, v in zip(train_outputs.keys(), outputs):
+                    # putting eveerything to its right place again
                     train_outputs[k].append(v)
-                # initialize hook outputs
+                # empty the output because it has the output from last iteration
+                # this is a very stupid way to code but va beeneee
                 outputs = []
             for k, v in train_outputs.items():
-                train_outputs[k] = torch.cat(v, 0)
+                train_outputs[k] = torch.cat(v, 0)# put alll of them allong acies 0
             # save extracted feature
             with open(train_feature_filepath, 'wb') as f:
                 pickle.dump(train_outputs, f)
@@ -125,7 +138,6 @@ def main():
         gt_list = []
         gt_mask_list = []
         test_imgs = []
-
         # extract test set features
         for (x, y, mask) in tqdm(test_dataloader, '| feature extraction | test | %s |' % class_name):
             test_imgs.extend(x.cpu().detach().numpy())
@@ -135,21 +147,31 @@ def main():
             with torch.no_grad():
                 pred = model(x.to(device))
             # get intermediate layer outputs
+            # why are we doing that again ??
             for k, v in zip(test_outputs.keys(), outputs):
                 test_outputs[k].append(v)
             # initialize hook outputs
             outputs = []
         for k, v in test_outputs.items():
             test_outputs[k] = torch.cat(v, 0)
-
+        # THERE IS NO TRAINING IN THIS METHOD
+        # THE METHOD STARTS FROM HERE
+        # you looped over everything in the test set
+        # now i understand
         # calculate distance matrix
+        # at the average pooling the size is 160,2024,1,1
         dist_matrix = calc_dist_matrix(torch.flatten(test_outputs['avgpool'], 1),
                                        torch.flatten(train_outputs['avgpool'], 1))
 
         # select K nearest neighbor and take average
+        # topk is equal to 5 in ere
+        # you have matrix of size 160,320
+        # cominbation ofevery training set with every testing set
         topk_values, topk_indexes = torch.topk(dist_matrix, k=args.top_k, dim=1, largest=False)
+        # it returns 160 by 5
+        # 160 is teh size of test set
         scores = torch.mean(topk_values, 1).cpu().detach().numpy()
-
+        # this is the mean score of the topk 5  values
         # calculate image-level ROC AUC score
         fpr, tpr, _ = roc_curve(gt_list, scores)
         roc_auc = roc_auc_score(gt_list, scores)
@@ -221,12 +243,32 @@ def main():
 
 def calc_dist_matrix(x, y):
     """Calculate Euclidean distance matrix with torch.tensor"""
-    n = x.size(0)
-    m = y.size(0)
-    d = x.size(1)
+    # you have vectors of size 160 by 2048
+    n = x.size(0)#160 batch size of the test set
+    m = y.size(0)#160 batch size for the training set
+    d = x.size(1) # size of the vecotr
+    # you unsqueeze as postion 1
+    # X IS ORINGALLLY N,1,2048
+    #IT become  N,M,2048
     x = x.unsqueeze(1).expand(n, m, d)
+    # you unsqueeze as postion 0
+    # n PyTorch, the expand function is used to "expand" the dimensions of a tensor to a larger size without
+    # actually copying the data.
+    # This is achieved by creating a new view of the original tensor with the expanded size,
+    # where the new dimensions are broadcasted.
+    # SIMPLE EXAMPLE OF tensor
+    # Original tensor of shape (1, 3)
+    # x = torch.tensor([[1, 2, 3]])
+    # # Expanding the tensor to shape (4, 3)
+    # y = x.expand(4, 3)
+    # y is orginally 1,M,D
+    # it becomes N,M,D
     y = y.unsqueeze(0).expand(n, m, d)
+
+    # so the size of x is (N,M,2048) you repeat allong M dimenison
+    # the size of y is (N,M,2048) you repseat along N dimension
     dist_matrix = torch.sqrt(torch.pow(x - y, 2).sum(2))
+    # calculate the distance matrix like that it is a square matrix
     return dist_matrix
 
 

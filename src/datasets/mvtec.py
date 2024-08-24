@@ -10,30 +10,33 @@ from torchvision import transforms as T
 
 
 URL = 'ftp://guest:GU.205dldo@ftp.softronics.ch/mvtec_anomaly_detection/mvtec_anomaly_detection.tar.xz'
-CLASS_NAMES = ['bottle', 'cable', 'capsule', 'carpet', 'grid',
-               'hazelnut', 'leather', 'metal_nut', 'pill', 'screw',
-               'tile', 'toothbrush', 'transistor', 'wood', 'zipper']
+CLASS_NAMES = ['screw']
 
 
 class MVTecDataset(Dataset):
     def __init__(self, root_path='../data', class_name='bottle', is_train=True,
                  resize=256, cropsize=224):
         assert class_name in CLASS_NAMES, 'class_name: {}, should be in {}'.format(class_name, CLASS_NAMES)
+        #v you need to pass the name of the folder that contain the folders of the full dataset
         self.root_path = root_path
         self.class_name = class_name
         self.is_train = is_train
         self.resize = resize
         self.cropsize = cropsize
         self.mvtec_folder_path = os.path.join(root_path, 'mvtec_anomaly_detection')
-
+        # datasets
+            # mvtec_anomaly_detection
+                # classes
         # download dataset if not exist
-        self.download()
+        # we can skip this point as it is nto needed
+        # self.download()
 
         # load dataset
         self.x, self.y, self.mask = self.load_dataset_folder()
 
         # set transforms
-        self.transform_x = T.Compose([T.Resize(resize, Image.ANTIALIAS),
+        #  I need he is normalzied with the weightest of image net
+        self.transform_x = T.Compose([T.Resize(resize, Image.LANCZOS),
                                       T.CenterCrop(cropsize),
                                       T.ToTensor(),
                                       T.Normalize(mean=[0.485, 0.456, 0.406],
@@ -64,6 +67,8 @@ class MVTecDataset(Dataset):
         x, y, mask = [], [], []
 
         img_dir = os.path.join(self.mvtec_folder_path, self.class_name, phase)
+        # this depends on training or testing phase
+        # you choose like that
         gt_dir = os.path.join(self.mvtec_folder_path, self.class_name, 'ground_truth')
 
         img_types = sorted(os.listdir(img_dir))
@@ -96,7 +101,8 @@ class MVTecDataset(Dataset):
 
     def download(self):
         """Download dataset if not exist"""
-
+        # the case that the dataset doesnot exist
+        # you start downloading it
         if not os.path.exists(self.mvtec_folder_path):
             tar_file_path = self.mvtec_folder_path + '.tar.xz'
             if not os.path.exists(tar_file_path):
