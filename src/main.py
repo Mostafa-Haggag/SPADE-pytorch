@@ -20,6 +20,7 @@ import datasets.mvtec as mvtec
 
 def parse_args():
     parser = argparse.ArgumentParser('SPADE')
+    # what is this topk paramters ???
     parser.add_argument("--top_k", type=int, default=5)
     parser.add_argument("--save_path", type=str, default="./result")
     return parser.parse_args()
@@ -33,6 +34,7 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # load model
+    # he just loaded a pretrained network from torch visions
     model = wide_resnet50_2(pretrained=True, progress=True)
     model.to(device)
     model.eval()
@@ -40,7 +42,35 @@ def main():
     # set model's intermediate outputs
     outputs = []
     def hook(module, input, output):
+        # The user defined hook to be registered.
         outputs.append(output)
+    #  The hook will be called every time after :func:`forward` has computed an output..
+    # I need to understand the concept of hooks in geeneral
+    '''
+    So what are hooks? Hooks are functions that help to update the gradients, inputs or outputs dynamically. 
+    That is I can change the behaviour of the Neural Network even when I am training it.
+
+    Hooks are used in two places
+
+        On tensors
+        On torch.nn.Modules
+    One more important thing is that to apply a hook we have to first “register” where we want to apply it.
+     It may sound a little complex now, we will understand it in the further examples.
+    A hook can be applied in 3 ways
+
+        forward prehook (executing before the forward pass),
+        forward hook (executing after the forward pass),
+        backward hook (executing after the backward pass).
+    Here forward pass is the part when inputs are used to compute the values of the next hidden neurons
+     using the weights and so on until it reaches the end and returns an output. Backward Pass happens
+      after calculating the Loss using the output’s value and the true value,
+       then the gradients of each weight and bias of every layer are calculated
+    in the direction of output to input(hence backwards) using the chain rule.
+     Basically, the step when Backpropagation happens
+     The hook will be called every time after forward() has computed an output.
+     
+    '''
+    # like this you extrade from the moduel the output in teh last alyer
     model.layer1[-1].register_forward_hook(hook)
     model.layer2[-1].register_forward_hook(hook)
     model.layer3[-1].register_forward_hook(hook)
@@ -51,21 +81,24 @@ def main():
     fig, ax = plt.subplots(1, 2, figsize=(20, 10))
     fig_img_rocauc = ax[0]
     fig_pixel_rocauc = ax[1]
-
+    # These are the 2 arrays that he is going to use to keep the data
     total_roc_auc = []
     total_pixel_roc_auc = []
-
+    # he is looping over all the class names which is a list
     for class_name in mvtec.CLASS_NAMES:
-
+        # for each class name he creates the dataset and dataloader
         train_dataset = mvtec.MVTecDataset(class_name=class_name, is_train=True)
         train_dataloader = DataLoader(train_dataset, batch_size=32, pin_memory=True)
         test_dataset = mvtec.MVTecDataset(class_name=class_name, is_train=False)
         test_dataloader = DataLoader(test_dataset, batch_size=32, pin_memory=True)
-
+        # he creates the ordered directory
+        # this is how you define ordered dict
         train_outputs = OrderedDict([('layer1', []), ('layer2', []), ('layer3', []), ('avgpool', [])])
         test_outputs = OrderedDict([('layer1', []), ('layer2', []), ('layer3', []), ('avgpool', [])])
 
         # extract train set features
+        # he sets the path that he save pikl file with classes name
+        # it is very interesting to know what is he saving insdie of here
         train_feature_filepath = os.path.join(args.save_path, 'temp', 'train_%s.pkl' % class_name)
         if not os.path.exists(train_feature_filepath):
             for (x, y, mask) in tqdm(train_dataloader, '| feature extraction | train | %s |' % class_name):
@@ -83,10 +116,12 @@ def main():
             with open(train_feature_filepath, 'wb') as f:
                 pickle.dump(train_outputs, f)
         else:
+            # you already have this saved somewhere.
             print('load train set feature from: %s' % train_feature_filepath)
             with open(train_feature_filepath, 'rb') as f:
                 train_outputs = pickle.load(f)
-
+        # he preped the picke file in something callled train_outputs
+        # it is important to understand what does this do exactly
         gt_list = []
         gt_mask_list = []
         test_imgs = []
@@ -238,4 +273,5 @@ def denormalization(x):
 
 
 if __name__ == '__main__':
+    # the code starts from here
     main()
