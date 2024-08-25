@@ -37,7 +37,7 @@ def main():
     # load model
     # he just loaded a pretrained network from torch visions
     # download the weights
-    model = wide_resnet50_2(weights=models.Wide_ResNet50_2_Weights.IMAGENET1K_V1, progress=True)
+    model = wide_resnet50_2(pretrained=True, progress=True)
     model.to(device)
     model.eval()
 
@@ -162,12 +162,35 @@ def main():
         # at the average pooling the size is 160,2024,1,1
         dist_matrix = calc_dist_matrix(torch.flatten(test_outputs['avgpool'], 1),
                                        torch.flatten(train_outputs['avgpool'], 1))
-
+        '''
+        Size of dist_matrix:
+        You mentioned that the matrix size is 160 x 320, meaning there are 160 test samples and 320 training samples
+        . Each entry in this matrix represents the distance between a test sample and a training sample.
+        '''
         # select K nearest neighbor and take average
         # topk is equal to 5 in ere
         # you have matrix of size 160,320
         # cominbation ofevery training set with every testing set
         topk_values, topk_indexes = torch.topk(dist_matrix, k=args.top_k, dim=1, largest=False)
+        # By selecting the top_k=5 nearest neighbors for each test sample,
+        # you effectively reduce the focus to the 5 most
+        # similar training samples for each test instance.
+        # for each test test you choose the top 5 that are super close to it in the training
+        # the distance is very close
+        # This is a common strategy in tasks like k-NN classification, where you might average the results or
+        # features from these nearest neighbors to make predictions or perform further analysis.
+        '''
+        torch.topk is a PyTorch function that returns the k smallest or largest elements of a tensor
+        along a specified dimension.
+        In this case, it's applied to dist_matrix to find the k nearest neighbors for each test sample,
+        based on the distances.
+        # Specifies that the function should find the nearest neighbors along the second dimension of dist_matrix,
+        i.e., for each test sample across all training samples
+        # largest=False: This indicates that the smallest values 
+        (i.e., the nearest neighbors) should be selected, as we are interested in the smallest distances.
+        ##############
+        
+        '''
         # it returns 160 by 5
         # 160 is teh size of test set
         scores = torch.mean(topk_values, 1).cpu().detach().numpy()
@@ -180,36 +203,119 @@ def main():
         fig_img_rocauc.plot(fpr, tpr, label='%s ROCAUC: %.3f' % (class_name, roc_auc))
 
         score_map_list = []
+        '''
+        The code extracts features from different layers of a neural network,
+        compares these features between test data and training data, and generates a "score map" for each test example.
+        The score map highlights the areas in the test image that are most similar to the training data,
+        likely indicating regions of interest for tasks like localization or anomaly detection.
+        The code includes memory management strategies
+        to avoid running out of CUDA memory, such as processing data in smaller batches,
+        deleting unnecessary variables, and using torch.cuda.empty_cache()
+        '''
         for t_idx in tqdm(range(test_outputs['avgpool'].shape[0]), '| localization | test | %s |' % class_name):
+            # you are looping over the full batch size
             score_maps = []
+            # score_maps is initialized as an empty list to store the score maps generated for
+            # different layers (layer1, layer2, layer3).
             for layer_name in ['layer1', 'layer2', 'layer3']:  # for each layer
+                # This inner loop iterates over three different layers (layer1, layer2, layer3)
+                # from the neural network. These layers likely correspond to feature maps extracted
+                # from the model at different depths.
+                # you are iterating over the layers, the layer_name is like the index
+                # YOU ARE SKIPPING THE LAYERS OF AVGPOOLING
+                # YOU NEED TO BE CAREFUL IN HERE
 
                 # construct a gallery of features at all pixel locations of the K nearest neighbors
+                # working on cpu to avoid the crashing
+                #
                 topk_feat_map = train_outputs[layer_name][topk_indexes[t_idx]]
+                # you have topk_indexes the size of the TEST Set
+                # For the current layer, the code extracts the feature maps of the top k nearest neighbors from the
+                # training data (indexed by topk_indexes[t_idx]).
                 test_feat_map = test_outputs[layer_name][t_idx:t_idx + 1]
+                # you get the size of [1,the shape of the feature map at this layer]
+                # The corresponding feature map of the current test example is extracted.
+                # why am i i doing this thing of t_idx:t_idx + 1 :
+                    # The main idea is that
+                    # You are not slicing two items;
+                        # you are slicing out a single item but preserving the dimension or structure of the data.
+                        # This approach is commonly used when you want to maintain the original structure
+                        # (like keeping it as a list or tensor) even when selecting a single item.
+                # torch.cuda.empty_cache()
                 feat_gallery = topk_feat_map.transpose(3, 1).flatten(0, 2).unsqueeze(-1).unsqueeze(-1)
+                # topk feature map the idea in here that you have size of 5
+                # these are 5 feature map that are similar to this specific test set
+                # so you tranpose so that your feature map is [5,56,56,256]
+                # you change teh number of channels with spatiail dimension
+                # uou flatten from 0 to 2 so you have (5*spatial_dim*spatial_dim,number of channels)
+                # you then unsquae in last 2 dimensions so you have
+                # (5*spatial_dim*spatial_dim,number of channels,1,1)
+                # feat_gallery: The extracted feature map (topk_feat_map) is transposed, flattened, and reshaped into
+                # a format suitable for distance computation with the test feature map.
+                # This creates a "gallery" of features across all spatial locations.
 
                 # calculate distance matrix
                 dist_matrix_list = []
+                # dist_matrix_list: Initializes an empty list to store the distance matrices
+                # yo uhave very big size .
+                # (5*spatial_dim*spatial_dim,number of channels,1,1)
+                # you iterate over 5*spatial_dim*spatial_dim
+                # in batches
                 for d_idx in range(feat_gallery.shape[0] // 100):
+                    # The loop processes the gallery in smaller batches (of size 100 in this case) to
+                    # compute the pairwise distance between features from the gallery and the test feature map using torch.pairwise_distance
                     dist_matrix = torch.pairwise_distance(feat_gallery[d_idx * 100:d_idx * 100 + 100], test_feat_map)
                     dist_matrix_list.append(dist_matrix)
+                # The resulting distance matrices are concatenated to form the full distance matrix (dist_matrix).
+                # you concate all teh distances in here
                 dist_matrix = torch.cat(dist_matrix_list, 0)
 
+                del topk_feat_map, test_feat_map,dist_matrix_list
+                torch.cuda.empty_cache()
                 # k nearest features from the gallery (k=1)
+                # you get the smallest distance matrics
                 score_map = torch.min(dist_matrix, dim=0)[0]
+                # score_map has size of (256,56)
+                # The minimum value in the distance matrix (torch.min) is taken to identify the nearest feature from
+                # the gallery for each pixel in the test feature map, forming the score_map.
                 score_map = F.interpolate(score_map.unsqueeze(0).unsqueeze(0), size=224,
                                           mode='bilinear', align_corners=False)
+                # you are adding 1,1 dimensionthen you are interpoalting to size of 2224
+                # so your output in here has the size of [1,1,224,224]
+
+                # The score map is then upsampled to a size of 224x224 using bilinear interpolation to
+                # match the input image dimensions.
                 score_maps.append(score_map)
+                # The resulting score map is added to the score_maps list for the current test example.
 
             # average distance between the features
+            # score_maps has the size of 3 because we are working on 3 layers
+            # you concate allong list dimension
+            # you calculate a mean score mape
             score_map = torch.mean(torch.cat(score_maps, 0), dim=0)
-
+            # The score maps from all three layers are concatenated and averaged to get a single score map that
+            # considers information from all the layers.
+            # this score map has the size of (1,224,224)
             # apply gaussian smoothing on the score map
             score_map = gaussian_filter(score_map.squeeze().cpu().detach().numpy(), sigma=4)
+            # apply gaussian filter  on specific numpy array
+            # The averaged score map is smoothed using a Gaussian filter (gaussian_filter)
+            # to reduce noise and improve localization.
+            # you ass the score map for this test example
             score_map_list.append(score_map)
+            # Finally, the smoothed score map is added to score_map_list, which stores
+            # the results for all test examples.
 
+        # you are looping in here to understand some specific stuff.
         flatten_gt_mask_list = np.concatenate(gt_mask_list).ravel()
+        '''
+            Flattening: ravel() returns a flattened (1D) version of the input array,
+            collapsing all the dimensions into a single dimension.
+            Contiguous Flattened Array: If possible, ravel() will return a flattened view of the original 
+            array without copying the data. However, if the array is not contiguous in memory,
+            it may return a flattened copy.
+        '''
+        # we do the same for the score map
         flatten_score_map_list = np.concatenate(score_map_list).ravel()
 
         # calculate per-pixel level ROCAUC
@@ -229,16 +335,16 @@ def main():
         # visualize localization result
         visualize_loc_result(test_imgs, gt_mask_list, score_map_list, threshold, args.save_path, class_name, vis_num=5)
 
-    print('Average ROCAUC: %.3f' % np.mean(total_roc_auc))
-    fig_img_rocauc.title.set_text('Average image ROCAUC: %.3f' % np.mean(total_roc_auc))
-    fig_img_rocauc.legend(loc="lower right")
+        print('Average ROCAUC: %.3f' % np.mean(total_roc_auc))
+        fig_img_rocauc.title.set_text('Average image ROCAUC: %.3f' % np.mean(total_roc_auc))
+        fig_img_rocauc.legend(loc="lower right")
 
-    print('Average pixel ROCUAC: %.3f' % np.mean(total_pixel_roc_auc))
-    fig_pixel_rocauc.title.set_text('Average pixel ROCAUC: %.3f' % np.mean(total_pixel_roc_auc))
-    fig_pixel_rocauc.legend(loc="lower right")
+        print('Average pixel ROCUAC: %.3f' % np.mean(total_pixel_roc_auc))
+        fig_pixel_rocauc.title.set_text('Average pixel ROCAUC: %.3f' % np.mean(total_pixel_roc_auc))
+        fig_pixel_rocauc.legend(loc="lower right")
 
-    fig.tight_layout()
-    fig.savefig(os.path.join(args.save_path, 'roc_curve.png'), dpi=100)
+        fig.tight_layout()
+        fig.savefig(os.path.join(args.save_path, 'roc_curve.png'), dpi=100)
 
 
 def calc_dist_matrix(x, y):
