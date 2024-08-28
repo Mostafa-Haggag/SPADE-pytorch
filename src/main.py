@@ -196,6 +196,8 @@ def main():
         scores = torch.mean(topk_values, 1).cpu().detach().numpy()
         # this is the mean score of the topk 5  values
         # calculate image-level ROC AUC score
+        # gt_list are for the test set
+        # scores are the score for this specific category
         fpr, tpr, _ = roc_curve(gt_list, scores)
         roc_auc = roc_auc_score(gt_list, scores)
         total_roc_auc.append(roc_auc)
@@ -212,11 +214,13 @@ def main():
         to avoid running out of CUDA memory, such as processing data in smaller batches,
         deleting unnecessary variables, and using torch.cuda.empty_cache()
         '''
+        # looping on the number of test ouptus
         for t_idx in tqdm(range(test_outputs['avgpool'].shape[0]), '| localization | test | %s |' % class_name):
             # you are looping over the full batch size
             score_maps = []
             # score_maps is initialized as an empty list to store the score maps generated for
             # different layers (layer1, layer2, layer3).
+            # we have 3 layers
             for layer_name in ['layer1', 'layer2', 'layer3']:  # for each layer
                 # This inner loop iterates over three different layers (layer1, layer2, layer3)
                 # from the neural network. These layers likely correspond to feature maps extracted
@@ -231,8 +235,9 @@ def main():
                 topk_feat_map = train_outputs[layer_name][topk_indexes[t_idx]]
                 # you have topk_indexes the size of the TEST Set
                 # For the current layer, the code extracts the feature maps of the top k nearest neighbors from the
-                # training data (indexed by topk_indexes[t_idx]).
+                # training data for this current test sample t_idx (indexed by topk_indexes[t_idx]).
                 test_feat_map = test_outputs[layer_name][t_idx:t_idx + 1]
+                # 1,256,56,56
                 # you get the size of [1,the shape of the feature map at this layer]
                 # The corresponding feature map of the current test example is extracted.
                 # why am i i doing this thing of t_idx:t_idx + 1 :
@@ -261,19 +266,32 @@ def main():
                 # (5*spatial_dim*spatial_dim,number of channels,1,1)
                 # you iterate over 5*spatial_dim*spatial_dim
                 # in batches
+                # feature_gally 15680,256,1,1
+                # we drop 80 features in this way
                 for d_idx in range(feat_gallery.shape[0] // 100):
                     # The loop processes the gallery in smaller batches (of size 100 in this case) to
-                    # compute the pairwise distance between features from the gallery and the test feature map using torch.pairwise_distance
+                    # compute the pairwise distance between features from the gallery
+                    # and the test feature map using torch.pairwise_distance
                     dist_matrix = torch.pairwise_distance(feat_gallery[d_idx * 100:d_idx * 100 + 100], test_feat_map)
+                    # the feat gally has the size of 100,256,1,1
+                    # test feture ,aps has size of 1,256,56,56
+                    # the output is of the size of 100,256,56
+                    # the 56 changes with the different layer
+                    # Computes the pairwise distance between input vectors, or between columns of input matrices.
+
                     dist_matrix_list.append(dist_matrix)
                 # The resulting distance matrices are concatenated to form the full distance matrix (dist_matrix).
                 # you concate all teh distances in here
+                # the length of dist_matrix_list is (15600,256,56)
+                # 56 changes with the layers
                 dist_matrix = torch.cat(dist_matrix_list, 0)
+                # distance matrix for specific layer
 
                 del topk_feat_map, test_feat_map,dist_matrix_list
-                torch.cuda.empty_cache()
+                # torch.cuda.empty_cache()
                 # k nearest features from the gallery (k=1)
                 # you get the smallest distance matrics
+                # dist_matrix (15600,256,56)
                 score_map = torch.min(dist_matrix, dim=0)[0]
                 # score_map has size of (256,56)
                 # The minimum value in the distance matrix (torch.min) is taken to identify the nearest feature from
